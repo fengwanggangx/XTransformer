@@ -1,0 +1,34 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Local environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Training data and generated assets
+data/
+
+# Model artifacts
+model/checkpoints/
+model/tokenizer/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Logs and experiment outputs
+logs/
+runs/
+wandb/
+tensorboard/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

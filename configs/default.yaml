@@ -1,0 +1,63 @@
+runtime:
+  seed: 42
+  debug: false
+  device: auto
+
+model:
+  d_model: 512
+  vocab_size: 32000
+  max_seq_len: 2048
+  n_heads: 8
+  n_layers: 6
+  d_ff: 2048
+  dropout: 0.1
+
+train:
+  mode: pretrain
+  language: all
+  data_path: ""
+  batch_size: 2
+  num_workers: 0
+  max_steps: 1000
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  grad_accum_steps: 1
+  warmup_steps: 100
+  min_lr_ratio: 0.1
+  max_grad_norm: 1.0
+  ignore_index: -100
+  log_steps: 20
+  save_steps: 500
+  eval_data_path: ""
+  eval_steps: 100
+  eval_batches: 20
+
+inference:
+  temperature: 0.8
+  top_k: 50
+  top_p: 0.9
+  max_new_tokens: 256
+  stop_at_sep: true
+  stop_token_ids: [3, 7, 0]
+
+tokens:
+  pad_token: "<PAD>"
+  unk_token: "<UNK>"
+  bos_token: "<BOS>"
+  eos_token: "<EOS>"
+  system_token: "<SYSTEM>"
+  user_token: "<USER>"
+  assistant_token: "<ASSISTANT>"
+  sep_token: "<SEP>"
+  padding_idx: 0
+  unk_idx: 1
+  bos_idx: 2
+  eos_idx: 3
+  system_idx: 4
+  user_idx: 5
+  assistant_idx: 6
+  sep_idx: 7
+
+paths:
+  data_dir: data
+  model_dir: model
