@@ -1,13 +1,17 @@
+import copy
+import tempfile
 import unittest
 from pathlib import Path
 
 import torch
+import yaml
 
 from config import load_config
 from data import TDataSet
-from inference import normalize_stop_token_ids
+from inference import inference_session_cache_key, normalize_stop_token_ids
 from model import make_model
 from reproducibility import seed_everything
+from tokenizer import encode_content
 
 
 def small_cfg(max_seq_len=8):
@@ -31,6 +35,51 @@ def small_model(cfg):
 class DummyTokenizer:
     def encode(self, text, out_type=int):
         return [10 + index for index, _ in enumerate(str(text))]
+
+
+class SpecialTokenTokenizer:
+    def __init__(self, cfg):
+        self.cfg = cfg
+
+    def encode(self, text, out_type=int):
+        pieces = str(text).split()
+        token_ids = []
+        for piece in pieces:
+            token_ids.append(self.cfg.tokens.all_token_ids.get(piece, 10))
+        return token_ids
+
+
+class ConfigContractTest(unittest.TestCase):
+    def test_relative_path_overrides_are_resolved_from_project_dir(self):
+        raw = copy.deepcopy(load_config().raw)
+        raw["paths"].update(
+            {
+                "checkpoint_dir": "runs/checkpoints",
+                "pretrain_checkpoint_path": "runs/pretrain.pt",
+                "tokenizer_model_prefix": "artifacts/tokenizer/custom",
+                "tokenizer_model_path": "custom/tokenizer.model",
+                "pretrain_dir": "datasets/pretrain",
+                "sft_single_turn_chinese_dir": "datasets/sft-cn",
+                "eval_dir": "datasets/eval",
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.yaml"
+            config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+            cfg = load_config(config_path)
+
+        project_dir = cfg.project_dir
+        self.assertEqual(Path(cfg.paths.checkpoint_dir), project_dir / "runs/checkpoints")
+        self.assertEqual(Path(cfg.paths.pretrain_checkpoint_path), project_dir / "runs/pretrain.pt")
+        self.assertEqual(Path(cfg.paths.sft_single_checkpoint_path), project_dir / "runs/checkpoints/sft_single.pt")
+        self.assertEqual(Path(cfg.paths.tokenizer_model_prefix), project_dir / "artifacts/tokenizer/custom")
+        self.assertEqual(Path(cfg.paths.tokenizer_model_path), project_dir / "custom/tokenizer.model")
+        self.assertEqual(Path(cfg.paths.tokenizer_vocab_path), project_dir / "artifacts/tokenizer/custom.vocab")
+        self.assertEqual(Path(cfg.paths.pretrain_dir), project_dir / "datasets/pretrain")
+        self.assertEqual(Path(cfg.paths.pretrain_chinese_dir), project_dir / "datasets/pretrain/chinese")
+        self.assertEqual(Path(cfg.paths.sft_single_turn_chinese_dir), project_dir / "datasets/sft-cn")
+        self.assertEqual(Path(cfg.paths.eval_dir), project_dir / "datasets/eval")
 
 
 class ModelCoreTest(unittest.TestCase):
@@ -132,6 +181,32 @@ class ModelCoreTest(unittest.TestCase):
 
 
 class InferenceContractTest(unittest.TestCase):
+    def test_session_cache_key_changes_when_config_values_change(self):
+        cfg = small_cfg()
+        checkpoint_path = "missing-checkpoint.pt"
+        cache_key = inference_session_cache_key(cfg, checkpoint_path)
+
+        cfg.inference.temperature = cfg.inference.temperature + 0.1
+
+        self.assertNotEqual(cache_key, inference_session_cache_key(cfg, checkpoint_path))
+
+    def test_session_cache_key_changes_when_tokenizer_file_changes(self):
+        cfg = small_cfg()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_dir = Path(tmp_dir)
+            tokenizer_path = tmp_dir / "tokenizer.model"
+            tokenizer_path.write_text("v1", encoding="utf-8")
+            cfg.paths.tokenizer_model_path = str(tokenizer_path)
+            checkpoint_path = tmp_dir / "missing-checkpoint.pt"
+
+            cache_key = inference_session_cache_key(cfg, checkpoint_path)
+            tokenizer_path.write_text("version two", encoding="utf-8")
+
+            self.assertNotEqual(
+                cache_key,
+                inference_session_cache_key(cfg, checkpoint_path),
+            )
+
     def test_stop_token_ids_are_configurable(self):
         cfg = small_cfg()
         default_stop_token_ids = normalize_stop_token_ids(cfg)
@@ -149,6 +224,29 @@ class InferenceContractTest(unittest.TestCase):
 
 
 class DataContractTest(unittest.TestCase):
+    def test_encode_content_masks_injected_structure_tokens(self):
+        cfg = small_cfg()
+        tokenizer = SpecialTokenTokenizer(cfg)
+
+        token_ids = encode_content(
+            cfg,
+            tokenizer,
+            "<SYSTEM> hello <ASSISTANT> <SEP> <EOS> <PAD> <UNK>",
+        )
+
+        self.assertEqual(
+            token_ids,
+            [
+                cfg.tokens.unk_idx,
+                10,
+                cfg.tokens.unk_idx,
+                cfg.tokens.unk_idx,
+                cfg.tokens.unk_idx,
+                cfg.tokens.unk_idx,
+                cfg.tokens.unk_idx,
+            ],
+        )
+
     def test_sft_single_masks_only_assistant_targets(self):
         cfg = small_cfg()
         dataset = TDataSet(

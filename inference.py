@@ -1,4 +1,6 @@
 from pathlib import Path
+import hashlib
+import json
 import math
 
 import torch
@@ -8,7 +10,7 @@ from checkpoint import load_model_state, validate_checkpoint_config
 from config import load_config
 from model import make_model, zero_padding_embedding
 from reproducibility import seed_everything
-from tokenizer import tokenizer_load
+from tokenizer import encode_content, tokenizer_load
 
 
 _SESSION_CACHE = {}
@@ -55,7 +57,7 @@ def load_model(cfg, checkpoint_path=None):
 
 def append_message(cfg, ids, tokenizer, role_id, content):
     ids.append(role_id)
-    ids.extend(tokenizer.encode(str(content), out_type=int))
+    ids.extend(encode_content(cfg, tokenizer, content))
     ids.append(cfg.tokens.sep_idx)
 
 
@@ -181,15 +183,42 @@ class InferenceSession:
 
         return self.tokenizer.decode(generated)
 
-def checkpoint_cache_key(checkpoint_path):
-    path = Path(checkpoint_path)
-    return str(path), path.stat().st_mtime_ns if path.exists() else None
+def file_cache_key(path):
+    path = Path(path)
+    try:
+        resolved_path = str(path.resolve())
+    except OSError:
+        resolved_path = str(path)
+
+    try:
+        stat = path.stat()
+    except OSError:
+        return resolved_path, None, None
+    return resolved_path, stat.st_mtime_ns, stat.st_size
+
+
+def config_cache_digest(cfg):
+    payload = json.dumps(
+        cfg.to_dict(),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def inference_session_cache_key(cfg, checkpoint_path=None):
+    checkpoint_path = cfg.get_checkpoint_path(checkpoint=checkpoint_path)
+    return (
+        file_cache_key(cfg.config_path),
+        config_cache_digest(cfg),
+        file_cache_key(cfg.paths.tokenizer_model_path),
+        file_cache_key(checkpoint_path),
+    )
 
 
 def get_inference_session(cfg, checkpoint_path=None):
     checkpoint_path = cfg.get_checkpoint_path(checkpoint=checkpoint_path)
-    checkpoint_path, checkpoint_mtime = checkpoint_cache_key(checkpoint_path)
-    cache_key = (str(cfg.config_path), checkpoint_path, checkpoint_mtime)
+    cache_key = inference_session_cache_key(cfg, checkpoint_path)
     session = _SESSION_CACHE.get(cache_key)
     if session is None:
         if len(_SESSION_CACHE) >= 4:

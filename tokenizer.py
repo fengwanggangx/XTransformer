@@ -18,6 +18,22 @@ def validate_special_tokens(tokenizer, cfg):
             )
 
 
+def content_token_ids_to_mask(cfg):
+    return frozenset(
+        token_id
+        for token, token_id in cfg.tokens.all_token_ids.items()
+        if token != cfg.tokens.unk_token
+    )
+
+
+def encode_content(cfg, tokenizer, text):
+    blocked_token_ids = content_token_ids_to_mask(cfg)
+    return [
+        cfg.tokens.unk_idx if token_id in blocked_token_ids else token_id
+        for token_id in tokenizer.encode(str(text), out_type=int)
+    ]
+
+
 def tokenizer_load(cfg, model_path=None):
     model_path = cfg.paths.tokenizer_model_path if model_path is None else model_path
     tokenizer = spm.SentencePieceProcessor()
@@ -43,7 +59,7 @@ def entry(cfg):
         unk_piece=cfg.tokens.unk_token,
         bos_piece=cfg.tokens.bos_token,
         eos_piece=cfg.tokens.eos_token,
-        user_defined_symbols=list(cfg.tokens.special_tokens),
+        control_symbols=list(cfg.tokens.special_tokens),
     )
     tokenizer_load(cfg, cfg.paths.tokenizer_model_path)
 

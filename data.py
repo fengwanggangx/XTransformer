@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
-from tokenizer import tokenizer_load
+from tokenizer import encode_content, tokenizer_load
 
 
 class TDataSet(IterableDataset):
@@ -346,7 +346,7 @@ class TDataSet(IterableDataset):
 
     def encode(self, text):
         self.ensure_tokenizer()
-        return list(self.tokenizer.encode(str(text), out_type=int))
+        return encode_content(self.cfg, self.tokenizer, text)
 
     def ensure_tokenizer(self):
         if self.tokenizer is None:

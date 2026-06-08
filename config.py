@@ -241,18 +241,20 @@ def section(raw, name):
 
 
 def build_paths(project_dir, raw_paths):
-    data_dir = resolve_path(project_dir, raw_paths.get("data_dir", "data"))
-    model_dir = resolve_path(project_dir, raw_paths.get("model_dir", "model"))
+    def path_value(name, default):
+        return resolve_path(project_dir, raw_paths.get(name, default))
 
-    tokenizer_corpus_dir = raw_paths.get("tokenizer_corpus_dir", f"{data_dir}/tokenizer")
-    tokenizer_output_dir = raw_paths.get("tokenizer_output_dir", f"{model_dir}/tokenizer")
-    tokenizer_model_prefix = raw_paths.get(
+    data_dir = path_value("data_dir", "data")
+    model_dir = path_value("model_dir", "model")
+    tokenizer_corpus_dir = path_value("tokenizer_corpus_dir", f"{data_dir}/tokenizer")
+    tokenizer_output_dir = path_value("tokenizer_output_dir", f"{model_dir}/tokenizer")
+    tokenizer_model_prefix = path_value(
         "tokenizer_model_prefix",
         f"{tokenizer_output_dir}/transformer",
     )
-    checkpoint_dir = raw_paths.get("checkpoint_dir", f"{model_dir}/checkpoints")
-    pretrain_dir = raw_paths.get("pretrain_dir", f"{data_dir}/pretrain")
-    sft_dir = raw_paths.get("sft_dir", f"{data_dir}/sft")
+    checkpoint_dir = path_value("checkpoint_dir", f"{model_dir}/checkpoints")
+    pretrain_dir = path_value("pretrain_dir", f"{data_dir}/pretrain")
+    sft_dir = path_value("sft_dir", f"{data_dir}/sft")
 
     return PathConfig(
         data_dir=data_dir,
@@ -260,39 +262,39 @@ def build_paths(project_dir, raw_paths):
         tokenizer_corpus_dir=tokenizer_corpus_dir,
         tokenizer_output_dir=tokenizer_output_dir,
         tokenizer_model_prefix=tokenizer_model_prefix,
-        tokenizer_model_path=raw_paths.get("tokenizer_model_path", f"{tokenizer_model_prefix}.model"),
-        tokenizer_vocab_path=raw_paths.get("tokenizer_vocab_path", f"{tokenizer_model_prefix}.vocab"),
-        tokenizer_corpus_path=raw_paths.get("tokenizer_corpus_path", f"{tokenizer_corpus_dir}/corpus.txt"),
+        tokenizer_model_path=path_value("tokenizer_model_path", f"{tokenizer_model_prefix}.model"),
+        tokenizer_vocab_path=path_value("tokenizer_vocab_path", f"{tokenizer_model_prefix}.vocab"),
+        tokenizer_corpus_path=path_value("tokenizer_corpus_path", f"{tokenizer_corpus_dir}/corpus.txt"),
         pretrain_dir=pretrain_dir,
-        pretrain_chinese_dir=raw_paths.get("pretrain_chinese_dir", f"{pretrain_dir}/chinese"),
-        pretrain_english_dir=raw_paths.get("pretrain_english_dir", f"{pretrain_dir}/english"),
+        pretrain_chinese_dir=path_value("pretrain_chinese_dir", f"{pretrain_dir}/chinese"),
+        pretrain_english_dir=path_value("pretrain_english_dir", f"{pretrain_dir}/english"),
         sft_dir=sft_dir,
-        sft_single_turn_dir=raw_paths.get("sft_single_turn_dir", f"{sft_dir}/single_turn"),
-        sft_single_turn_chinese_dir=raw_paths.get(
+        sft_single_turn_dir=path_value("sft_single_turn_dir", f"{sft_dir}/single_turn"),
+        sft_single_turn_chinese_dir=path_value(
             "sft_single_turn_chinese_dir",
             f"{sft_dir}/single_turn/chinese",
         ),
-        sft_single_turn_english_dir=raw_paths.get(
+        sft_single_turn_english_dir=path_value(
             "sft_single_turn_english_dir",
             f"{sft_dir}/single_turn/english",
         ),
-        sft_multi_turn_dir=raw_paths.get("sft_multi_turn_dir", f"{sft_dir}/multi_turn"),
-        sft_multi_turn_chinese_dir=raw_paths.get(
+        sft_multi_turn_dir=path_value("sft_multi_turn_dir", f"{sft_dir}/multi_turn"),
+        sft_multi_turn_chinese_dir=path_value(
             "sft_multi_turn_chinese_dir",
             f"{sft_dir}/multi_turn/chinese",
         ),
-        sft_multi_turn_english_dir=raw_paths.get(
+        sft_multi_turn_english_dir=path_value(
             "sft_multi_turn_english_dir",
             f"{sft_dir}/multi_turn/english",
         ),
-        eval_dir=raw_paths.get("eval_dir", f"{data_dir}/eval"),
+        eval_dir=path_value("eval_dir", f"{data_dir}/eval"),
         checkpoint_dir=checkpoint_dir,
-        pretrain_checkpoint_path=raw_paths.get("pretrain_checkpoint_path", f"{checkpoint_dir}/pretrain.pt"),
-        sft_single_checkpoint_path=raw_paths.get(
+        pretrain_checkpoint_path=path_value("pretrain_checkpoint_path", f"{checkpoint_dir}/pretrain.pt"),
+        sft_single_checkpoint_path=path_value(
             "sft_single_checkpoint_path",
             f"{checkpoint_dir}/sft_single.pt",
         ),
-        sft_multi_checkpoint_path=raw_paths.get(
+        sft_multi_checkpoint_path=path_value(
             "sft_multi_checkpoint_path",
             f"{checkpoint_dir}/sft_multi.pt",
         ),
