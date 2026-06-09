@@ -7,12 +7,122 @@ import tokenizer
 import train
 
 
+def print_run_settings(title, rows):
+    print("", flush=True)
+    print(f"=== {title} settings ===", flush=True)
+    for name, value in rows:
+        print(f"{name}: {value}", flush=True)
+    print("", flush=True)
+
+
+def confirm_execution(yes=False):
+    if yes:
+        return True
+
+    answer = input("Proceed? [Y/N]: ").strip().lower()
+    return answer in ("y", "yes")
+
+
+def print_tokenizer_settings(cfg, args):
+    print_run_settings(
+        "Tokenizer",
+        (
+            ("config", cfg.config_path),
+            ("device", cfg.device),
+            ("corpus_path", cfg.paths.tokenizer_corpus_path),
+            ("model_prefix", cfg.paths.tokenizer_model_prefix),
+            ("model_path", cfg.paths.tokenizer_model_path),
+            ("vocab_path", cfg.paths.tokenizer_vocab_path),
+            ("vocab_size", cfg.model.vocab_size),
+            ("model_type", "bpe"),
+            ("character_coverage", 0.9995),
+            ("input_sentence_size", args.input_sentence_size),
+            ("shuffle_input_sentence", args.shuffle_input_sentence),
+            ("train_extremely_large_corpus", not args.no_large_corpus),
+            ("special_tokens", ", ".join(cfg.tokens.special_tokens)),
+        ),
+    )
+
+
+def print_train_settings(
+    cfg,
+    args,
+    data_path,
+    checkpoint_path,
+    load_checkpoint_path,
+    save_checkpoint_path,
+):
+    effective_batch = args.batch_size * args.grad_accum_steps
+    print_run_settings(
+        "Training",
+        (
+            ("config", cfg.config_path),
+            ("mode", args.mode),
+            ("language", args.language),
+            ("device", cfg.device),
+            ("data_path", data_path),
+            ("resume", not args.no_resume),
+            ("load_checkpoint", load_checkpoint_path),
+            ("save_checkpoint", save_checkpoint_path),
+            ("default_checkpoint", checkpoint_path),
+            ("seed", args.seed),
+            ("d_embed", cfg.model.d_embed),
+            ("vocab_size", cfg.model.vocab_size),
+            ("max_seq_len", cfg.model.max_seq_len),
+            ("n_heads", cfg.model.n_heads),
+            ("n_layers", cfg.model.n_layers),
+            ("d_ff", cfg.model.d_ff),
+            ("dropout", cfg.model.dropout),
+            ("batch_size", args.batch_size),
+            ("grad_accum_steps", args.grad_accum_steps),
+            ("effective_batch_samples", effective_batch),
+            ("max_steps", args.max_steps),
+            ("learning_rate", cfg.train.learning_rate),
+            ("weight_decay", cfg.train.weight_decay),
+            ("warmup_steps", cfg.train.warmup_steps),
+            ("min_lr_ratio", cfg.train.min_lr_ratio),
+            ("max_grad_norm", cfg.train.max_grad_norm),
+            ("num_workers", args.num_workers),
+            ("log_steps", cfg.train.log_steps),
+            ("save_steps", cfg.train.save_steps),
+            ("eval_data_path", args.eval_data_path or ""),
+            ("eval_steps", args.eval_steps),
+            ("eval_batches", args.eval_batches),
+        ),
+    )
+
+
 def build_parser(cfg):
     parser = argparse.ArgumentParser(description="Transformer training and inference entrypoint.")
     parser.add_argument("--config", default=str(cfg.config_path))
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("tokenizer", help="train sentencepiece tokenizer")
+    tokenizer_parser = subparsers.add_parser("tokenizer", help="train sentencepiece tokenizer")
+    tokenizer_parser.add_argument("-y", "--yes", action="store_true", help="run without confirmation")
+    tokenizer_parser.add_argument("--no-progress", action="store_true", help="hide tokenizer progress output")
+    tokenizer_parser.add_argument(
+        "--check",
+        nargs="*",
+        default=None,
+        help="check the trained tokenizer with optional text",
+    )
+    tokenizer_parser.add_argument(
+        "--input-sentence-size",
+        type=int,
+        default=tokenizer.DEFAULT_INPUT_SENTENCE_SIZE,
+        help="number of sentences to sample for tokenizer training",
+    )
+    tokenizer_parser.add_argument(
+        "--shuffle-input-sentence",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="shuffle sampled sentences before tokenizer training",
+    )
+    tokenizer_parser.add_argument(
+        "--no-large-corpus",
+        action="store_true",
+        help="disable SentencePiece large corpus mode",
+    )
 
     train_parser = subparsers.add_parser("train", help="train model")
     train_parser.add_argument("--data-path", default=None)
@@ -30,6 +140,7 @@ def build_parser(cfg):
     train_parser.add_argument("--eval-batches", type=int, default=cfg.train.eval_batches)
     train_parser.add_argument("--seed", type=int, default=cfg.runtime.seed)
     train_parser.add_argument("--no-resume", action="store_true")
+    train_parser.add_argument("-y", "--yes", action="store_true", help="run without confirmation")
 
     infer_parser = subparsers.add_parser("infer", help="run inference")
     infer_parser.add_argument("--prompt", default="")
@@ -56,7 +167,21 @@ def entry():
     cfg = load_config(args.config)
 
     if args.command == "tokenizer":
-        tokenizer.entry(cfg)
+        if args.check is not None:
+            check_text = " ".join(args.check) if args.check else tokenizer.DEFAULT_CHECK_TEXT
+            tokenizer.check(cfg, text=check_text)
+            return
+        print_tokenizer_settings(cfg, args)
+        if not confirm_execution(args.yes):
+            print("Aborted.", flush=True)
+            return
+        tokenizer.entry(
+            cfg,
+            show_progress=not args.no_progress,
+            input_sentence_size=args.input_sentence_size,
+            shuffle_input_sentence=args.shuffle_input_sentence,
+            train_extremely_large_corpus=not args.no_large_corpus,
+        )
     elif args.command == "train":
         data_path = cfg.get_train_data_path(
             mode=args.mode,
@@ -67,6 +192,25 @@ def entry():
             mode=args.mode,
             checkpoint=args.checkpoint,
         )
+        load_checkpoint_path = cfg.get_checkpoint_path(
+            mode=args.mode,
+            checkpoint=args.load_checkpoint or checkpoint_path,
+        )
+        save_checkpoint_path = cfg.get_checkpoint_path(
+            mode=args.mode,
+            checkpoint=args.save_checkpoint or checkpoint_path,
+        )
+        print_train_settings(
+            cfg,
+            args,
+            data_path,
+            checkpoint_path,
+            load_checkpoint_path,
+            save_checkpoint_path,
+        )
+        if not confirm_execution(args.yes):
+            print("Aborted.", flush=True)
+            return
         train.train(
             cfg,
             data_path=data_path,
