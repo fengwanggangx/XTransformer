@@ -371,7 +371,7 @@ def make_model(cfg, vocab_size=None, N=None, d_embed=None,
                d_ff=None, h=None, dropout=None):
     vocab_size = vocab_size if vocab_size is not None else cfg.model.vocab_size
     N = N if N is not None else cfg.model.n_layers
-    d_embed = d_embed if d_embed is not None else cfg.model.d_model
+    d_embed = d_embed if d_embed is not None else cfg.model.d_embed
     d_ff = d_ff if d_ff is not None else cfg.model.d_ff
     h = h if h is not None else cfg.model.n_heads
     dropout = dropout if dropout is not None else cfg.model.dropout

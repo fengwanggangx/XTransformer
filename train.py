@@ -14,7 +14,7 @@ from reproducibility import build_torch_generator, seed_everything, seed_worker
 
 
 MODEL_CONFIG_KEYS = (
-    "d_model",
+    "d_embed",
     "vocab_size",
     "max_seq_len",
     "n_heads",

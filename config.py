@@ -19,7 +19,7 @@ class RuntimeConfig:
 
 @dataclass
 class ModelConfig:
-    d_model: int
+    d_embed: int
     vocab_size: int
     max_seq_len: int
     n_heads: int
@@ -324,7 +324,7 @@ def build_tokens(raw_tokens):
 
 def checkpoint_model_config(cfg):
     return {
-        "d_model": cfg.model.d_model,
+        "d_embed": cfg.model.d_embed,
         "vocab_size": cfg.model.vocab_size,
         "max_seq_len": cfg.model.max_seq_len,
         "n_heads": cfg.model.n_heads,
@@ -362,7 +362,7 @@ def load_config(path=None):
             device=str(runtime.get("device", "auto")),
         ),
         model=ModelConfig(
-            d_model=int(model["d_model"]),
+            d_embed=int(model["d_embed"]),
             vocab_size=int(model["vocab_size"]),
             max_seq_len=int(model["max_seq_len"]),
             n_heads=int(model["n_heads"]),
