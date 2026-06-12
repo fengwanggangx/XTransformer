@@ -51,8 +51,13 @@ def print_train_settings(
     checkpoint_path,
     load_checkpoint_path,
     save_checkpoint_path,
+    checkpoint_info,
+    current_trained_steps,
+    planned_train_steps,
+    target_total_steps,
 ):
     effective_batch = args.batch_size * args.grad_accum_steps
+    checkpoint_error = checkpoint_info.get("error") or ""
     print_run_settings(
         "Training",
         (
@@ -65,6 +70,15 @@ def print_train_settings(
             ("load_checkpoint", load_checkpoint_path),
             ("save_checkpoint", save_checkpoint_path),
             ("default_checkpoint", checkpoint_path),
+            ("checkpoint_exists", checkpoint_info.get("exists", False)),
+            ("checkpoint_step", checkpoint_info.get("step", 0)),
+            ("checkpoint_mode", checkpoint_info.get("mode") or ""),
+            ("checkpoint_error", checkpoint_error),
+            ("current_trained_steps", current_trained_steps),
+            ("step_mode", "train_steps" if args.train_steps is not None else "max_steps"),
+            ("train_steps", args.train_steps if args.train_steps is not None else ""),
+            ("planned_train_steps", planned_train_steps),
+            ("target_total_steps", target_total_steps),
             ("seed", args.seed),
             ("d_embed", cfg.model.d_embed),
             ("vocab_size", cfg.model.vocab_size),
@@ -132,6 +146,14 @@ def build_parser(cfg):
     train_parser.add_argument("--load-checkpoint", default=None)
     train_parser.add_argument("--save-checkpoint", default=None)
     train_parser.add_argument("--max-steps", type=int, default=cfg.train.max_steps)
+    train_parser.add_argument(
+        "--train-steps",
+        "--extra-steps",
+        dest="train_steps",
+        type=int,
+        default=None,
+        help="train this many additional optimizer steps from the current checkpoint; overrides --max-steps",
+    )
     train_parser.add_argument("--batch-size", type=int, default=cfg.train.batch_size)
     train_parser.add_argument("--num-workers", type=int, default=cfg.train.num_workers)
     train_parser.add_argument("--grad-accum-steps", type=int, default=cfg.train.grad_accum_steps)
@@ -200,6 +222,20 @@ def entry():
             mode=args.mode,
             checkpoint=args.save_checkpoint or checkpoint_path,
         )
+        checkpoint_info = train.inspect_checkpoint(load_checkpoint_path)
+        checkpoint_mode = checkpoint_info.get("mode")
+        can_resume_step = (
+            not args.no_resume
+            and not checkpoint_info.get("error")
+            and (checkpoint_mode is None or checkpoint_mode == args.mode)
+        )
+        current_trained_steps = int(checkpoint_info.get("step", 0)) if can_resume_step else 0
+        if args.train_steps is not None:
+            planned_train_steps = args.train_steps
+            target_total_steps = current_trained_steps + args.train_steps
+        else:
+            target_total_steps = args.max_steps
+            planned_train_steps = max(target_total_steps - current_trained_steps, 0)
         print_train_settings(
             cfg,
             args,
@@ -207,6 +243,10 @@ def entry():
             checkpoint_path,
             load_checkpoint_path,
             save_checkpoint_path,
+            checkpoint_info,
+            current_trained_steps,
+            planned_train_steps,
+            target_total_steps,
         )
         if not confirm_execution(args.yes):
             print("Aborted.", flush=True)
@@ -220,6 +260,7 @@ def entry():
             save_checkpoint_path=args.save_checkpoint,
             resume=not args.no_resume,
             max_steps=args.max_steps,
+            train_steps=args.train_steps,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             grad_accum_steps=args.grad_accum_steps,

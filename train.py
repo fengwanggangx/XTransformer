@@ -129,6 +129,28 @@ def save_checkpoint(cfg, path, model, optimizer, scaler, step, mode, scheduler=N
     torch.save(checkpoint, path)
 
 
+def inspect_checkpoint(path):
+    path = Path(path)
+    info = {
+        "exists": path.exists(),
+        "step": 0,
+        "mode": None,
+        "error": "",
+    }
+    if not info["exists"]:
+        return info
+
+    try:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    except Exception as exc:
+        info["error"] = str(exc)
+        return info
+
+    info["step"] = int(checkpoint.get("step", 0))
+    info["mode"] = checkpoint.get("mode")
+    return info
+
+
 def load_checkpoint(cfg, path, model, optimizer=None, scaler=None, scheduler=None, map_location=None, mode=None):
     map_location = cfg.device if map_location is None else map_location
     path = Path(path)
@@ -174,6 +196,7 @@ def train(
     save_checkpoint_path=None,
     resume=True,
     max_steps=None,
+    train_steps=None,
     batch_size=None,
     num_workers=None,
     grad_accum_steps=None,
@@ -191,6 +214,7 @@ def train(
     eval_batches = cfg.train.eval_batches if eval_batches is None else eval_batches
     seed = cfg.runtime.seed if seed is None else seed
     max_steps = normalize_int("max_steps", max_steps, 1)
+    train_steps = None if train_steps is None else normalize_int("train_steps", train_steps, 1)
     batch_size = normalize_int("batch_size", batch_size, 1)
     num_workers = normalize_int("num_workers", num_workers, 0)
     grad_accum_steps = normalize_int("grad_accum_steps", grad_accum_steps, 1)
@@ -212,6 +236,19 @@ def train(
         mode=mode,
         checkpoint=save_checkpoint_path or checkpoint_path,
     )
+    if train_steps is not None:
+        start_step_for_target = 0
+        if resume:
+            checkpoint_info = inspect_checkpoint(load_checkpoint_path)
+            checkpoint_mode = checkpoint_info.get("mode")
+            if (
+                checkpoint_info.get("exists")
+                and not checkpoint_info.get("error")
+                and (checkpoint_mode is None or checkpoint_mode == mode)
+            ):
+                start_step_for_target = int(checkpoint_info.get("step", 0))
+        max_steps = normalize_int("max_steps", start_step_for_target + train_steps, 1)
+
     dataset = TDataSet(cfg, data_path, mode=mode)
     dataloader = DataLoader(
         dataset,
@@ -256,6 +293,15 @@ def train(
         if checkpoint_mode is not None and checkpoint_mode != mode and not explicit_save_checkpoint:
             save_checkpoint_path = cfg.get_checkpoint_path(mode=mode)
 
+    start_step = step
+    planned_train_steps = max(max_steps - start_step, 0)
+    print(
+        f"training progress: start_step={start_step} "
+        f"planned_train_steps={planned_train_steps} "
+        f"target_total_steps={max_steps}",
+        flush=True,
+    )
+
     model.train()
     optimizer.zero_grad(set_to_none=True)
 
@@ -286,9 +332,16 @@ def train(
         nonlocal running_loss, running_count
         if step % log_steps == 0:
             elapsed = max(time.time() - started_at, 1e-6)
+            run_steps = max(step - start_step, 0)
             avg_loss = running_loss / max(running_count, 1)
             lr = optimizer.param_groups[0]["lr"]
-            print(f"step={step} loss={avg_loss:.4f} lr={lr:.6g} speed={step / elapsed:.2f} steps/s", flush=True)
+            print(
+                f"step={step} loss={avg_loss:.4f} lr={lr:.6g} "
+                f"speed={run_steps / elapsed:.2f} steps/s "
+                f"trained_total_steps={step} run_steps={run_steps} "
+                f"target_total_steps={max_steps}",
+                flush=True,
+            )
             running_loss = 0.0
             running_count = 0
 
@@ -347,7 +400,11 @@ def train(
             micro_step = 0
 
     save_checkpoint(cfg, save_checkpoint_path, model, optimizer, scaler, step, mode, scheduler)
-    print(f"train complete: step={step}, checkpoint={save_checkpoint_path}", flush=True)
+    print(
+        f"train complete: step={step}, trained_total_steps={step}, "
+        f"run_steps={max(step - start_step, 0)}, checkpoint={save_checkpoint_path}",
+        flush=True,
+    )
     return model
 
 
