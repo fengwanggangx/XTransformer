@@ -1,3 +1,4 @@
+from scripts.logs import log_print as print
 from itertools import islice
 import math
 import os

@@ -1,4 +1,5 @@
 
+from scripts.logs import log_print
 import argparse
 import threading
 
@@ -9,11 +10,12 @@ import train
 
 
 def print_run_settings(title, rows):
-    print("", flush=True)
-    print(f"=== {title} settings ===", flush=True)
+    output = log_print if title == "Training" else print
+    output("", flush=True)
+    output(f"=== {title} settings ===", flush=True)
     for name, value in rows:
-        print(f"{name}: {value}", flush=True)
-    print("", flush=True)
+        output(f"{name}: {value}", flush=True)
+    output("", flush=True)
 
 
 def confirm_execution(yes=False):

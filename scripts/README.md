@@ -73,3 +73,5 @@ conda run --no-capture-output -n another_environment python scripts/train.py
 ```
 
 `--allow-cpu` permits a configuration selecting CPU, for small development runs. Relative paths work from any current directory when using the launcher's absolute path.
+
+Training launches append the invocation, resolved command, configuration, starting progress, validation loss, checkpoint saves, and completion summary to `logs/YYYYMMDD.log` under the project root. Entries include local timestamps; repeated runs append to the same daily UTF-8 file. Frequent training loss/speed lines remain console-only. Logging takes effect on the next launch.

@@ -14,6 +14,7 @@ import torch
 from config import DEFAULT_CONFIG_PATH, TRAIN_LANGUAGES, TRAIN_MODES, load_config
 from data import TDataSet
 from tokenizer import tokenizer_load
+from scripts.logs import log_print as print
 
 
 def positive_int(value):
@@ -165,7 +166,11 @@ def check_inputs(cfg, args, data_path, eval_path):
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    arguments = sys.argv[1:] if argv is None else list(argv)
+    args = build_parser().parse_args(arguments)
+    print("=== Training launch ===", flush=True)
+    print("Working directory: " + str(Path.cwd()), flush=True)
+    print("Launch command: " + subprocess.list2cmdline([sys.executable, str(Path(__file__).resolve()), *arguments]), flush=True)
     try:
         cfg = load_config(project_path(args.config))
         command, data_path, eval_path, source, output = build_command(cfg, args)
