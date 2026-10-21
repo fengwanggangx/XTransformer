@@ -1,16 +1,26 @@
-from pathlib import Path
+from itertools import islice
 import math
+import os
+from pathlib import Path
+import tempfile
 import time
+import warnings
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from config import checkpoint_model_config, load_config
-from checkpoint import load_model_state, validate_checkpoint_config
+from checkpoint import load_model_state, tokenizer_fingerprint, validate_checkpoint_config
 from data import TDataSet
 from model import make_model, zero_padding_embedding
-from reproducibility import build_torch_generator, seed_everything, seed_worker
+from reproducibility import (
+    build_torch_generator,
+    capture_rng_state,
+    restore_rng_state,
+    seed_everything,
+    seed_worker,
+)
 
 
 MODEL_CONFIG_KEYS = (
@@ -83,35 +93,37 @@ def evaluate(cfg, model, dataloader, max_batches=None, skip_batches=0):
     model.eval()
 
     total_loss = 0.0
+    total_tokens = 0
     total_batches = 0
     max_batches = cfg.train.eval_batches if max_batches is None else max_batches
     max_batches = max(int(max_batches), 1)
     skip_batches = max(int(skip_batches), 0)
 
-    for batch_index, batch in enumerate(dataloader):
-        if batch_index < skip_batches:
-            continue
-        input_ids = batch["input_ids"].to(cfg.device, non_blocking=True)
-        labels = batch["labels"].to(cfg.device, non_blocking=True)
-        logits = model(input_ids)
-        loss = F.cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
-            labels.reshape(-1),
-            ignore_index=cfg.train.ignore_index,
-        )
-        total_loss += loss.item()
-        total_batches += 1
-        if total_batches >= max_batches:
-            break
+    try:
+        for batch_index, batch in enumerate(dataloader):
+            if batch_index < skip_batches:
+                continue
+            input_ids = batch["input_ids"].to(cfg.device, non_blocking=True)
+            labels = batch["labels"].to(cfg.device, non_blocking=True)
+            logits = model(input_ids)
+            loss = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                labels.reshape(-1),
+                ignore_index=cfg.train.ignore_index,
+                reduction="sum",
+            )
+            total_loss += loss.item()
+            total_tokens += labels.ne(cfg.train.ignore_index).sum().item()
+            total_batches += 1
+            if total_batches >= max_batches:
+                break
+    finally:
+        model.train(was_training)
 
-    if was_training:
-        model.train()
-    if total_batches == 0:
-        return None
-    return total_loss / total_batches
+    return total_loss / total_tokens if total_tokens else None
 
 
-def save_checkpoint(cfg, path, model, optimizer, scaler, step, mode, scheduler=None):
+def save_checkpoint(cfg, path, model, optimizer, scaler, step, mode, scheduler=None, training_state=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
@@ -121,12 +133,28 @@ def save_checkpoint(cfg, path, model, optimizer, scaler, step, mode, scheduler=N
         "model_config": build_model_config(cfg),
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "tokenizer_sha256": tokenizer_fingerprint(cfg),
     }
     if scaler is not None:
         checkpoint["scaler_state_dict"] = scaler.state_dict()
     if scheduler is not None:
         checkpoint["scheduler_state_dict"] = scheduler.state_dict()
-    torch.save(checkpoint, path)
+    if training_state is not None:
+        checkpoint["training_state"] = training_state
+
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary_path = Path(stream.name)
+            torch.save(checkpoint, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def inspect_checkpoint(path):
@@ -151,10 +179,12 @@ def inspect_checkpoint(path):
     return info
 
 
-def load_checkpoint(cfg, path, model, optimizer=None, scaler=None, scheduler=None, map_location=None, mode=None):
-    map_location = cfg.device if map_location is None else map_location
+def load_checkpoint(cfg, path, model, optimizer=None, scaler=None, scheduler=None, map_location=None, mode=None, required=True, training_state=None):
+    map_location = "cpu" if map_location is None else map_location
     path = Path(path)
     if not path.exists():
+        if required:
+            raise FileNotFoundError(f"checkpoint does not exist: {path}")
         return 0, None
 
     checkpoint = torch.load(path, map_location=map_location, weights_only=True)
@@ -184,7 +214,36 @@ def load_checkpoint(cfg, path, model, optimizer=None, scaler=None, scheduler=Non
             f"checkpoint has no scheduler_state_dict; advanced scheduler to step {step}",
             flush=True,
         )
+    if training_state is not None:
+        saved_training_state = checkpoint.get("training_state")
+        if saved_training_state is not None:
+            training_state.update(saved_training_state)
+        elif step > 0:
+            warnings.warn(
+                f"{path} has no training_state; data will restart from the beginning "
+                "and random state cannot be restored",
+                RuntimeWarning,
+                stacklevel=2,
+            )
     return step, checkpoint_mode
+
+
+def build_data_config(dataset, batch_size, num_workers, grad_accum_steps, seed):
+    files = []
+    for path in dataset.get_path_files(dataset.path):
+        stat = path.stat()
+        files.append({
+            "path": str(path.resolve()),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        })
+    return {
+        "files": files,
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "grad_accum_steps": grad_accum_steps,
+        "seed": seed,
+    }
 
 
 def train(
@@ -204,6 +263,7 @@ def train(
     eval_steps=None,
     eval_batches=None,
     seed=None,
+    reset_data_state=False,
 ):
     max_steps = cfg.train.max_steps if max_steps is None else max_steps
     batch_size = cfg.train.batch_size if batch_size is None else batch_size
@@ -228,6 +288,9 @@ def train(
     worker_init_fn = seed_worker if num_workers > 0 else None
 
     explicit_save_checkpoint = save_checkpoint_path is not None
+    explicit_load_checkpoint = load_checkpoint_path is not None
+    if explicit_load_checkpoint and not resume:
+        raise ValueError("--load-checkpoint cannot be combined with --no-resume")
     load_checkpoint_path = cfg.get_checkpoint_path(
         mode=mode,
         checkpoint=load_checkpoint_path or checkpoint_path,
@@ -236,6 +299,8 @@ def train(
         mode=mode,
         checkpoint=save_checkpoint_path or checkpoint_path,
     )
+    if explicit_load_checkpoint and not Path(load_checkpoint_path).is_file():
+        raise FileNotFoundError(f"checkpoint does not exist: {load_checkpoint_path}")
     if train_steps is not None:
         start_step_for_target = 0
         if resume:
@@ -250,6 +315,7 @@ def train(
         max_steps = normalize_int("max_steps", start_step_for_target + train_steps, 1)
 
     dataset = TDataSet(cfg, data_path, mode=mode)
+    data_config = build_data_config(dataset, batch_size, num_workers, grad_accum_steps, seed)
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -273,13 +339,16 @@ def train(
         )
 
     model = make_model(cfg)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.learning_rate,  weight_decay=cfg.train.weight_decay)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=cfg.train.learning_rate, weight_decay=cfg.train.weight_decay,
+    )
     scheduler = build_lr_scheduler(cfg, optimizer, max_steps=max_steps)
     use_amp = cfg.device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     step = 0
     checkpoint_mode = None
+    resumed_training_state = {}
     if resume:
         step, checkpoint_mode = load_checkpoint(
             cfg,
@@ -289,9 +358,26 @@ def train(
             scaler,
             scheduler,
             mode=mode,
+            required=explicit_load_checkpoint,
+            training_state=resumed_training_state,
         )
         if checkpoint_mode is not None and checkpoint_mode != mode and not explicit_save_checkpoint:
             save_checkpoint_path = cfg.get_checkpoint_path(mode=mode)
+
+    if reset_data_state:
+        resumed_training_state.clear()
+    if resumed_training_state and resumed_training_state["data_config"] != data_config:
+        raise ValueError(
+            "training data or batching configuration changed; use --reset-data-state "
+            "to explicitly restart data traversal while retaining the checkpoint weights and optimizer"
+        )
+    epoch = int(resumed_training_state.get("epoch", 0))
+    batches_in_epoch = int(resumed_training_state.get("batches_in_epoch", 0))
+    epoch_generator_state = resumed_training_state.get("epoch_generator_state")
+    resume_rng_state = resumed_training_state.get("rng_state")
+    if resume_rng_state is not None:
+        restore_rng_state(resume_rng_state)
+        eval_generator.set_state(resumed_training_state["eval_generator_state"].cpu())
 
     start_step = step
     planned_train_steps = max(max_steps - start_step, 0)
@@ -301,21 +387,17 @@ def train(
         f"target_total_steps={max_steps}",
         flush=True,
     )
+    if batches_in_epoch:
+        print(f"resuming data: epoch={epoch} replay_batches={batches_in_epoch}", flush=True)
 
     model.train()
     optimizer.zero_grad(set_to_none=True)
 
     started_at = time.time()
     running_loss = 0.0
-    running_count = 0
-    micro_step = 0
+    running_tokens = 0
 
-    def optimizer_step(grad_scale=1.0):
-        if grad_scale != 1.0:
-            for parameter in model.parameters():
-                if parameter.grad is not None:
-                    parameter.grad.mul_(grad_scale)
-
+    def optimizer_step():
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.max_grad_norm)
         scale_before_step = scaler.get_scale()
@@ -328,12 +410,30 @@ def train(
         optimizer.zero_grad(set_to_none=True)
         return optimizer_stepped
 
+    def save_training_checkpoint():
+        training_state = {
+            "data_config": data_config,
+            "epoch": epoch,
+            "batches_in_epoch": batches_in_epoch,
+            "epoch_generator_state": (
+                epoch_generator_state
+                if epoch_generator_state is not None
+                else train_generator.get_state()
+            ),
+            "eval_generator_state": eval_generator.get_state(),
+            "rng_state": capture_rng_state(),
+        }
+        save_checkpoint(
+            cfg, save_checkpoint_path, model, optimizer, scaler, step, mode,
+            scheduler, training_state=training_state,
+        )
+
     def after_optimizer_step():
-        nonlocal running_loss, running_count
+        nonlocal running_loss, running_tokens
         if step % log_steps == 0:
             elapsed = max(time.time() - started_at, 1e-6)
             run_steps = max(step - start_step, 0)
-            avg_loss = running_loss / max(running_count, 1)
+            avg_loss = running_loss / max(running_tokens, 1)
             lr = optimizer.param_groups[0]["lr"]
             print(
                 f"step={step} loss={avg_loss:.4f} lr={lr:.6g} "
@@ -343,7 +443,7 @@ def train(
                 flush=True,
             )
             running_loss = 0.0
-            running_count = 0
+            running_tokens = 0
 
         if eval_dataloader is not None and eval_steps > 0 and step % eval_steps == 0:
             eval_loss = evaluate(
@@ -356,50 +456,71 @@ def train(
                 print(f"step={step} eval_loss={eval_loss:.4f}", flush=True)
 
         if step % save_steps == 0:
-            save_checkpoint(cfg, save_checkpoint_path, model, optimizer, scaler, step, mode, scheduler)
+            save_training_checkpoint()
             print(f"saved checkpoint: {save_checkpoint_path}", flush=True)
 
     while step < max_steps:
-        has_batch = False
-        for batch in dataloader:
+        if epoch_generator_state is None:
+            epoch_generator_state = train_generator.get_state()
+        else:
+            train_generator.set_state(epoch_generator_state.cpu())
+        iterator = iter(dataloader)
+        # Replay only the current epoch to recover the consumed DataLoader order,
+        # including worker sharding and partial batches; prefetch is not a cursor.
+        for _ in range(batches_in_epoch):
+            try:
+                next(iterator)
+            except StopIteration as exc:
+                raise ValueError("checkpoint data cursor exceeds the current epoch") from exc
+        if resume_rng_state is not None:
+            restore_rng_state(resume_rng_state)
+            resume_rng_state = None
+
+        has_batch = batches_in_epoch > 0
+        while step < max_steps:
+            # Only token/label tensors are buffered, not model activations. Knowing
+            # the window's token count before backward also keeps AMP scaling sane.
+            batches = list(islice(iterator, grad_accum_steps))
+            if not batches:
+                break
             has_batch = True
-            micro_step += 1
-            input_ids = batch["input_ids"].to(cfg.device, non_blocking=True)
-            labels = batch["labels"].to(cfg.device, non_blocking=True)
+            batches_in_epoch += len(batches)
+            window_tokens = sum(
+                batch["labels"].ne(cfg.train.ignore_index).sum().item()
+                for batch in batches
+            )
+            if window_tokens == 0:
+                raise ValueError("gradient accumulation window has no trainable tokens")
+            for batch in batches:
+                input_ids = batch["input_ids"].to(cfg.device, non_blocking=True)
+                labels = batch["labels"].to(cfg.device, non_blocking=True)
 
-            with torch.amp.autocast(device_type=cfg.device.type, enabled=use_amp):
-                logits = model(input_ids)
-                loss = F.cross_entropy(
-                    logits.reshape(-1, logits.size(-1)),
-                    labels.reshape(-1),
-                    ignore_index=cfg.train.ignore_index,
-                )
-                loss = loss / grad_accum_steps
+                with torch.amp.autocast(device_type=cfg.device.type, enabled=use_amp):
+                    logits = model(input_ids)
+                    loss_sum = F.cross_entropy(
+                        logits.reshape(-1, logits.size(-1)),
+                        labels.reshape(-1),
+                        ignore_index=cfg.train.ignore_index,
+                        reduction="sum",
+                    )
+                    loss = loss_sum / window_tokens
 
-            scaler.scale(loss).backward()
-            running_loss += loss.item() * grad_accum_steps
-            running_count += 1
+                scaler.scale(loss).backward()
+                running_loss += loss_sum.item()
+            running_tokens += window_tokens
 
-            if micro_step % grad_accum_steps == 0:
-                if not optimizer_step():
-                    continue
-
+            if optimizer_step():
                 step += 1
                 after_optimizer_step()
-
-                if step >= max_steps:
-                    break
         if not has_batch:
             raise ValueError(f"no valid samples loaded from {data_path}")
-        residual_micro_steps = micro_step % grad_accum_steps
-        if residual_micro_steps and step < max_steps:
-            grad_scale = grad_accum_steps / residual_micro_steps
-            if optimizer_step(grad_scale=grad_scale):
-                step += 1
-                after_optimizer_step()
-            micro_step = 0
+        if step >= max_steps:
+            break
+        epoch += 1
+        batches_in_epoch = 0
+        epoch_generator_state = None
 
-    save_checkpoint(cfg, save_checkpoint_path, model, optimizer, scaler, step, mode, scheduler)
+    save_training_checkpoint()
     print(
         f"train complete: step={step}, trained_total_steps={step}, "
         f"run_steps={max(step - start_step, 0)}, checkpoint={save_checkpoint_path}",

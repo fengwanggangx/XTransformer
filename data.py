@@ -128,7 +128,7 @@ class TDataSet(IterableDataset):
         block_size = self.max_seq_len + 1
 
         samples = []
-        for start in range(0, len(ids), block_size):
+        for start in range(0, len(ids) - 1, self.max_seq_len):
             chunk_ids = ids[start:start + block_size]
             chunk_mask = loss_mask[start:start + block_size]
             sample = self.finalize(chunk_ids, chunk_mask)
@@ -171,8 +171,10 @@ class TDataSet(IterableDataset):
         if system:
             self.append_message(ids, loss_mask, self.SYSTEM, system, train=False)
 
-        has_assistant = False
+        last_assistant_end = None
         for message in messages:
+            if not isinstance(message, dict):
+                continue
             role = self.normalize_role(message.get("role") or message.get("from"))
             content = self.message_content(message)
             if not role or not content:
@@ -187,15 +189,18 @@ class TDataSet(IterableDataset):
             elif role == "assistant":
                 role_id = self.ASSISTANT
                 train = True
-                has_assistant = True
             else:
                 continue
 
             self.append_message(ids, loss_mask, role_id, content, train=train)
+            if train:
+                last_assistant_end = len(ids)
 
-        if not has_assistant:
+        if last_assistant_end is None:
             return None
 
+        ids = ids[:last_assistant_end]
+        loss_mask = loss_mask[:last_assistant_end]
         ids.append(self.EOS)
         loss_mask.append(True)
         return self.finalize_sft(ids, loss_mask)
@@ -247,17 +252,16 @@ class TDataSet(IterableDataset):
 
     def truncate_last_turn(self, ids, loss_mask, user_pos, assistant_pos, limit):
         space = limit - 1
-        if space < 2:
-            return ids[:limit], loss_mask[:limit]
+        # USER, SEP, ASSISTANT and at least one assistant target must fit.
+        if space < 4:
+            return [], []
 
         user_ids = ids[user_pos:assistant_pos]
         user_mask = loss_mask[user_pos:assistant_pos]
         assistant_ids = ids[assistant_pos:]
         assistant_mask = loss_mask[assistant_pos:]
 
-        min_user_budget = min(len(user_ids), max(1, space // 4))
-        if len(user_ids) > 1 and space >= 3:
-            min_user_budget = max(2, min_user_budget)
+        min_user_budget = min(len(user_ids), max(2, space // 4))
 
         assistant_budget = min(len(assistant_ids), space - min_user_budget)
         user_budget = space - assistant_budget
@@ -276,22 +280,19 @@ class TDataSet(IterableDataset):
         )
 
     def keep_user_context(self, user_ids, user_mask, budget):
-        if budget <= 0:
+        if budget < 2:
             return [], []
         if len(user_ids) <= budget:
             return user_ids, user_mask
-        if budget == 1:
-            return [user_ids[0]], [user_mask[0]]
-
-        body_ids = user_ids[1:]
-        body_mask = user_mask[1:]
-        if len(body_ids) > 1 and body_ids[-1] == self.SEP:
-            body_ids = body_ids[:-1]
-            body_mask = body_mask[:-1]
+        body_budget = budget - 2
+        body_ids = user_ids[1:-1]
+        body_mask = user_mask[1:-1]
+        kept_body_ids = body_ids[-body_budget:] if body_budget else []
+        kept_body_mask = body_mask[-body_budget:] if body_budget else []
 
         return (
-            [user_ids[0]] + body_ids[-(budget - 1):],
-            [user_mask[0]] + body_mask[-(budget - 1):],
+            [user_ids[0]] + kept_body_ids + [self.SEP],
+            [user_mask[0]] + kept_body_mask + [False],
         )
 
     def slice_with_bos(self, ids, loss_mask, start, limit):

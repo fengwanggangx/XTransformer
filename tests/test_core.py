@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 import yaml
 
-from config import load_config
+from config import build_paths, load_config
 from data import TDataSet
 from inference import inference_session_cache_key, normalize_stop_token_ids
 from model import make_model
@@ -50,6 +50,18 @@ class SpecialTokenTokenizer:
 
 
 class ConfigContractTest(unittest.TestCase):
+    def test_sft_language_defaults_follow_overridden_roots(self):
+        cfg = load_config()
+        paths = build_paths(cfg.project_dir, {
+            "sft_single_turn_dir": "custom/single",
+            "sft_multi_turn_dir": "custom/multi",
+            "sft_multi_turn_english_dir": "custom/english",
+        })
+        self.assertEqual(Path(paths.sft_single_turn_chinese_dir), cfg.project_dir / "custom/single/chinese")
+        self.assertEqual(Path(paths.sft_single_turn_english_dir), cfg.project_dir / "custom/single/english")
+        self.assertEqual(Path(paths.sft_multi_turn_chinese_dir), cfg.project_dir / "custom/multi/chinese")
+        self.assertEqual(Path(paths.sft_multi_turn_english_dir), cfg.project_dir / "custom/english")
+
     def test_relative_path_overrides_are_resolved_from_project_dir(self):
         raw = copy.deepcopy(load_config().raw)
         raw["paths"].update(
@@ -224,6 +236,59 @@ class InferenceContractTest(unittest.TestCase):
 
 
 class DataContractTest(unittest.TestCase):
+    def dataset(self, max_seq_len):
+        cfg = small_cfg(max_seq_len)
+        dataset = TDataSet(cfg, "unused.jsonl")
+        dataset.tokenizer = DummyTokenizer()
+        return dataset
+
+    def test_pretrain_chunks_cover_every_next_token_target_once(self):
+        dataset = self.dataset(4)
+        for length in (1, 3, 4, 5, 8, 9, 10, 20):
+            with self.subTest(length=length):
+                text = "x" * length
+                samples = dataset.build_pretrain_samples({"text": text})
+                targets = [target for sample in samples for target in sample["labels"]]
+                self.assertEqual(targets, dataset.encode(text) + [dataset.EOS])
+                for sample in samples:
+                    self.assertLessEqual(len(sample["input_ids"]), 4)
+
+    def test_truncated_sft_keeps_user_separator_and_assistant_targets(self):
+        for max_seq_len in (4, 5, 8, 12):
+            with self.subTest(max_seq_len=max_seq_len):
+                dataset = self.dataset(max_seq_len)
+                sample = dataset.build_single_turn_samples({
+                    "instruction": "x" * 20, "response": "abc",
+                })
+                self.assertIsNotNone(sample)
+                position = sample["input_ids"].index(dataset.ASSISTANT)
+                self.assertEqual(sample["input_ids"][position - 1], dataset.SEP)
+                self.assertEqual(sample["input_ids"][0], dataset.BOS)
+                self.assertEqual(sample["input_ids"][1], dataset.USER)
+                self.assertTrue(all(x == dataset.ignore_index for x in sample["labels"][:position]))
+                self.assertNotEqual(sample["labels"][position], dataset.ignore_index)
+                self.assertLessEqual(len(sample["input_ids"]), max_seq_len)
+
+    def test_too_small_sft_window_does_not_emit_broken_role_sequence(self):
+        dataset = self.dataset(3)
+        self.assertIsNone(dataset.build_single_turn_samples({"instruction": "long", "response": "abc"}))
+
+    def test_multi_turn_discards_trailing_non_assistant_messages(self):
+        dataset = self.dataset(64)
+        messages = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "bc"},
+            {"role": "user", "content": "d"},
+            {"role": "assistant", "content": "ef"},
+        ]
+        expected = dataset.build_multi_turn_samples({"messages": messages})
+        actual = dataset.build_multi_turn_samples({"messages": messages + [
+            {"role": "user", "content": "unanswered question"},
+            {"role": "system", "content": "trailing system message"},
+        ]})
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual["labels"][-1], dataset.EOS)
+
     def test_encode_content_masks_injected_structure_tokens(self):
         cfg = small_cfg()
         tokenizer = SpecialTokenTokenizer(cfg)

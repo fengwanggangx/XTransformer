@@ -79,7 +79,7 @@ This is another training document.
 {"content": "This is another training document."}
 ```
 
-Pretrain samples are trained on all tokens.
+Pretrain samples are trained on all next-token targets, including EOS. Long documents are split into blocks with one overlapping token so that block boundaries do not lose prediction targets.
 
 ### SFT Single Turn
 
@@ -141,7 +141,7 @@ Supported role aliases:
 | `gpt`, `assistant`, `bot` | `assistant` |
 | `system` | `system` |
 
-Only assistant messages are trained. System and user messages are context only.
+Only assistant messages are trained. System and user messages are context only. Trailing user/system messages after the last assistant reply are discarded before adding EOS. Long SFT samples retain the user/assistant role markers and the separator between them; samples too short to fit these markers and an assistant target are skipped.
 
 ## Batching
 
@@ -197,9 +197,27 @@ python main.py train --mode pretrain --seed 42
 
 Use `--save-checkpoint` to choose a custom save path. If a checkpoint from another training mode is loaded and `--save-checkpoint` is not provided, training saves to the current mode's default checkpoint path.
 
+An explicit `--load-checkpoint` must exist and cannot be combined with `--no-resume`. A missing default checkpoint still starts a new training run. Checkpoints are written to a temporary file in the destination directory and atomically replace the previous file only after a successful write.
+
+New checkpoints include the tokenizer's SHA-256 fingerprint and full special-token configuration. Training and inference reject incompatible tokenizers even when their vocabulary sizes match. Legacy checkpoints without a fingerprint remain loadable with a warning; keep the original tokenizer when loading them.
+
+Same-mode resumes restore the current epoch, consumed batch count, Python/PyTorch random states, and DataLoader generator states. The current epoch is replayed up to the saved batch position without training, which can take time for large datasets. The data files (paths, sizes, modification times), batch size, worker count, accumulation count, and seed must match. Continuous and resumed training use the same data order and random sequence when the data, training schedule, and execution environment are unchanged; CUDA kernels may still be nondeterministic.
+
+When intentionally changing the data or batching configuration, explicitly restart data traversal and random streams while retaining model weights, optimizer state, and the trained step count:
+
+```bash
+python main.py train --mode pretrain --load-checkpoint model/checkpoints/pretrain.pt --data-path data/new-pretrain --reset-data-state --train-steps 100
+```
+
+Cross-mode fine-tuning starts a new data cursor and optimizer state automatically. Legacy checkpoints without training state warn that the data cursor and random streams cannot be restored and restart data traversal from the beginning.
+
+Gradient accumulation and reported training/validation losses are weighted by the number of non-ignored target tokens. Partial accumulation windows at the end of an epoch use the actual token count. Accumulation buffers CPU token/label batches for one window while processing model activations one microbatch at a time.
+
+Overriding `paths.sft_single_turn_dir` or `paths.sft_multi_turn_dir` also changes the corresponding default `chinese`/`english` subdirectories. Explicit language-subdirectory settings take precedence.
+
 ## Tests
 
-Run the core regression tests:
+Run the model, data, checkpoint, and training regression tests (including multi-worker resume):
 
 ```bash
 python -m unittest discover -s tests -v

@@ -1,3 +1,6 @@
+import hashlib
+from dataclasses import asdict
+from pathlib import Path
 import re
 import warnings
 
@@ -29,7 +32,53 @@ def is_allowed_missing_key(key):
     return any(pattern.fullmatch(key) for pattern in ALLOWED_MISSING_PATTERNS)
 
 
+def tokenizer_fingerprint(cfg):
+    digest = hashlib.sha256()
+    with Path(cfg.paths.tokenizer_model_path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_checkpoint_tokenizer(checkpoint, cfg, source):
+    saved_tokens = checkpoint.get("config", {}).get("tokens")
+    current_tokens = asdict(cfg.tokens)
+    if saved_tokens is None:
+        warnings.warn(
+            f"{source} has no token configuration; token compatibility is unverified",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    else:
+        mismatches = [
+            key for key, value in current_tokens.items()
+            if key in saved_tokens and saved_tokens[key] != value
+        ]
+        if mismatches:
+            raise RuntimeError(
+                f"checkpoint token configuration mismatch: {source}: "
+                + ", ".join(mismatches)
+            )
+        if current_tokens.keys() - saved_tokens.keys():
+            warnings.warn(
+                f"{source} has incomplete token configuration; compatibility is only partially verified",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+
+    saved_fingerprint = checkpoint.get("tokenizer_sha256")
+    if saved_fingerprint is None:
+        warnings.warn(
+            f"{source} has no tokenizer fingerprint; verify that the original tokenizer is in use",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    elif saved_fingerprint != tokenizer_fingerprint(cfg):
+        raise RuntimeError(f"checkpoint tokenizer fingerprint mismatch: {source}")
+
+
 def validate_checkpoint_config(checkpoint, cfg, source="checkpoint"):
+    validate_checkpoint_tokenizer(checkpoint, cfg, source)
     saved_config = checkpoint.get("model_config")
     if not saved_config:
         warnings.warn(

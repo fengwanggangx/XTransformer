@@ -255,6 +255,8 @@ def build_paths(project_dir, raw_paths):
     checkpoint_dir = path_value("checkpoint_dir", f"{model_dir}/checkpoints")
     pretrain_dir = path_value("pretrain_dir", f"{data_dir}/pretrain")
     sft_dir = path_value("sft_dir", f"{data_dir}/sft")
+    sft_single_turn_dir = path_value("sft_single_turn_dir", f"{sft_dir}/single_turn")
+    sft_multi_turn_dir = path_value("sft_multi_turn_dir", f"{sft_dir}/multi_turn")
 
     return PathConfig(
         data_dir=data_dir,
@@ -269,23 +271,23 @@ def build_paths(project_dir, raw_paths):
         pretrain_chinese_dir=path_value("pretrain_chinese_dir", f"{pretrain_dir}/chinese"),
         pretrain_english_dir=path_value("pretrain_english_dir", f"{pretrain_dir}/english"),
         sft_dir=sft_dir,
-        sft_single_turn_dir=path_value("sft_single_turn_dir", f"{sft_dir}/single_turn"),
+        sft_single_turn_dir=sft_single_turn_dir,
         sft_single_turn_chinese_dir=path_value(
             "sft_single_turn_chinese_dir",
-            f"{sft_dir}/single_turn/chinese",
+            f"{sft_single_turn_dir}/chinese",
         ),
         sft_single_turn_english_dir=path_value(
             "sft_single_turn_english_dir",
-            f"{sft_dir}/single_turn/english",
+            f"{sft_single_turn_dir}/english",
         ),
-        sft_multi_turn_dir=path_value("sft_multi_turn_dir", f"{sft_dir}/multi_turn"),
+        sft_multi_turn_dir=sft_multi_turn_dir,
         sft_multi_turn_chinese_dir=path_value(
             "sft_multi_turn_chinese_dir",
-            f"{sft_dir}/multi_turn/chinese",
+            f"{sft_multi_turn_dir}/chinese",
         ),
         sft_multi_turn_english_dir=path_value(
             "sft_multi_turn_english_dir",
-            f"{sft_dir}/multi_turn/english",
+            f"{sft_multi_turn_dir}/english",
         ),
         eval_dir=path_value("eval_dir", f"{data_dir}/eval"),
         checkpoint_dir=checkpoint_dir,

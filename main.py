@@ -67,6 +67,7 @@ def print_train_settings(
             ("device", cfg.device),
             ("data_path", data_path),
             ("resume", not args.no_resume),
+            ("reset_data_state", args.reset_data_state),
             ("load_checkpoint", load_checkpoint_path),
             ("save_checkpoint", save_checkpoint_path),
             ("default_checkpoint", checkpoint_path),
@@ -162,6 +163,10 @@ def build_parser(cfg):
     train_parser.add_argument("--eval-batches", type=int, default=cfg.train.eval_batches)
     train_parser.add_argument("--seed", type=int, default=cfg.runtime.seed)
     train_parser.add_argument("--no-resume", action="store_true")
+    train_parser.add_argument(
+        "--reset-data-state", action="store_true",
+        help="restart data traversal when resuming with changed data or batching settings",
+    )
     train_parser.add_argument("-y", "--yes", action="store_true", help="run without confirmation")
 
     infer_parser = subparsers.add_parser("infer", help="run inference")
@@ -268,6 +273,7 @@ def entry():
             eval_steps=args.eval_steps,
             eval_batches=args.eval_batches,
             seed=args.seed,
+            reset_data_state=args.reset_data_state,
         )
     elif args.command == "infer":
         prompt = args.prompt or input("user> ").strip()
