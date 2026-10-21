@@ -1,5 +1,6 @@
 
 import argparse
+import threading
 
 from config import DEFAULT_CONFIG_PATH, load_config
 import inference
@@ -21,6 +22,28 @@ def confirm_execution(yes=False):
 
     answer = input("Proceed? [Y/N]: ").strip().lower()
     return answer in ("y", "yes")
+
+
+def wait_after_training(model):
+    """Keep the trained model alive until the user explicitly stops the process."""
+    print(
+        "Training finished and checkpoint saved. Process and model remain loaded. "
+        "No additional steps will run. Type exit or press Ctrl+C to stop.",
+        flush=True,
+    )
+    try:
+        while True:
+            try:
+                answer = input("training finished> ").strip().lower()
+            except EOFError:
+                print("Standard input is closed. Waiting for Ctrl+C or process termination.", flush=True)
+                threading.Event().wait()
+                return
+            if answer in ("exit", "quit"):
+                return
+            print("Type exit to release the model and close the training process.", flush=True)
+    except KeyboardInterrupt:
+        print("Exiting training process.", flush=True)
 
 
 def print_tokenizer_settings(cfg, args):
@@ -164,6 +187,10 @@ def build_parser(cfg):
     train_parser.add_argument("--seed", type=int, default=cfg.runtime.seed)
     train_parser.add_argument("--no-resume", action="store_true")
     train_parser.add_argument(
+        "--keep-alive", action="store_true",
+        help="keep the process and trained model loaded after saving the final checkpoint",
+    )
+    train_parser.add_argument(
         "--reset-data-state", action="store_true",
         help="restart data traversal when resuming with changed data or batching settings",
     )
@@ -256,7 +283,7 @@ def entry():
         if not confirm_execution(args.yes):
             print("Aborted.", flush=True)
             return
-        train.train(
+        model = train.train(
             cfg,
             data_path=data_path,
             mode=args.mode,
@@ -275,6 +302,8 @@ def entry():
             seed=args.seed,
             reset_data_state=args.reset_data_state,
         )
+        if args.keep_alive:
+            wait_after_training(model)
     elif args.command == "infer":
         prompt = args.prompt or input("user> ").strip()
         print(

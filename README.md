@@ -159,6 +159,16 @@ Only assistant messages are trained. System and user messages are context only. 
 
 ## Training
 
+For the prepared `python_31208` environment and Wiki datasets, start or resume Chinese pretraining with:
+
+```powershell
+.\scripts\train.cmd
+```
+
+The launcher checks CUDA, the tokenizer and data, uses batch size 1 and gradient accumulation 4, and trains 1000 additional steps per invocation. Use `--dry-run` to check setup without training, `--max-steps 1000` for a fixed total step target, and `--mode sft_single` / `--mode sft_multi` for fine-tuning. See [scripts/README.md](scripts/README.md) for data selection, validation, checkpoint selection and resume examples.
+
+After saving the final checkpoint, the launcher keeps the training process and model loaded until you type `exit` or press Ctrl+C. It does not automatically train additional steps. Use `--exit-on-complete` to exit automatically after saving.
+
 Pretrain:
 
 ```bash
