@@ -56,7 +56,9 @@ Override data and checkpoint paths, including when intentionally changing batchi
 .\scripts\train.cmd --batch-size 2 --reset-data-state
 ```
 
-Use `--no-eval` to disable validation. Use `--config configs/custom.yaml` for a different model/configuration, `--load-checkpoint` for a custom source checkpoint, or `--seed` to override the seed. The core trainer requires `--reset-data-state` when changing training data, batching, worker count, accumulation count, or seed on a same-mode resume.
+Use `--no-eval` to disable validation. Use `--config configs/custom.yaml` for a different model/configuration, `--load-checkpoint` for a custom source checkpoint, or `--seed` to override the seed. Each corpus (resolved data path and training mode) has its own saved cursor. Switching between Chinese and English automatically restores that corpus's position; first use starts at the beginning. Do not pass `--reset-data-state` for routine language switching. When a corpus ends, training continues with its next epoch until the requested steps finish.
+
+Use `--reset-data-state` to restart only the selected corpus, retaining all other corpus positions, model weights, optimizer state, global random state, and cumulative steps. Changes to an existing corpus's files, batching, worker count, accumulation count, or seed require this explicit reset. Legacy single-cursor checkpoints do not migrate data positions; a corpus without a saved entry starts at the beginning.
 
 When the correct Python environment is already active, the Python launcher can also be called directly:
 

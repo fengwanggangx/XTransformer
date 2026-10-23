@@ -213,7 +213,9 @@ New checkpoints include the tokenizer's SHA-256 fingerprint and full special-tok
 
 Same-mode resumes restore the current epoch, consumed batch count, Python/PyTorch random states, and DataLoader generator states. The current epoch is replayed up to the saved batch position without training, which can take time for large datasets. The data files (paths, sizes, modification times), batch size, worker count, accumulation count, and seed must match. Continuous and resumed training use the same data order and random sequence when the data, training schedule, and execution environment are unchanged; CUDA kernels may still be nondeterministic.
 
-When intentionally changing the data or batching configuration, explicitly restart data traversal and random streams while retaining model weights, optimizer state, and the trained step count:
+Checkpoints retain separate corpus cursors keyed by resolved data path and training mode. Switching between Chinese and English automatically resumes each corpus at its saved epoch and batch position; a new corpus starts at the beginning. Model weights, optimizer state, random streams, and cumulative steps remain global. End of corpus starts the next epoch. Legacy single-cursor checkpoints do not migrate data positions; a corpus without a saved entry starts at the beginning.
+
+When intentionally restarting a corpus, or changing its files or batching configuration, explicitly reset only its traversal cursor while retaining other corpus cursors and global training state:
 
 ```bash
 python main.py train --mode pretrain --load-checkpoint model/checkpoints/pretrain.pt --data-path data/new-pretrain --reset-data-state --train-steps 100

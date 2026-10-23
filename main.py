@@ -194,7 +194,7 @@ def build_parser(cfg):
     )
     train_parser.add_argument(
         "--reset-data-state", action="store_true",
-        help="restart data traversal when resuming with changed data or batching settings",
+        help="reset only the selected corpus cursor; retain other corpus cursors and global training state",
     )
     train_parser.add_argument("-y", "--yes", action="store_true", help="run without confirmation")
 

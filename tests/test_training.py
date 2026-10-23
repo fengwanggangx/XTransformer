@@ -127,6 +127,58 @@ class TrainingRegressionTest(unittest.TestCase):
         train.save_checkpoint(self.cfg, path, model, optimizer, None, 10, "pretrain")
         return model
 
+    def test_corpus_switch_preserves_cursors_and_reset_is_local(self):
+        path = self.root / "switch.pt"
+        other = self.root / "english.txt"
+        other.write_text("alpha beta\ngamma delta\nepsilon\n", encoding="utf-8")
+        self.run_training(path, max_steps=2)
+        first = torch.load(path, weights_only=True)["training_state"]
+        first_key = first["active_data_key"]
+        self.run_training(path, resume=True, data_path=str(other), max_steps=3)
+        second = torch.load(path, weights_only=True)["training_state"]
+        second_key = second["active_data_key"]
+        self.assert_nested_equal(second["data_states"][first_key], first["data_states"][first_key])
+        self.run_training(path, resume=True, max_steps=4)
+        checkpoint = torch.load(path, weights_only=True)
+        state = checkpoint["training_state"]
+        self.assertEqual(checkpoint["step"], 4)
+        self.assertEqual(state["batches_in_epoch"], 3)
+        self.assert_nested_equal(state["data_states"][second_key], second["data_states"][second_key])
+        self.run_training(path, resume=True, reset_data_state=True, max_steps=5)
+        state = torch.load(path, weights_only=True)["training_state"]
+        self.assertEqual(state["batches_in_epoch"], 1)
+        self.assert_nested_equal(state["data_states"][second_key], second["data_states"][second_key])
+
+    def test_legacy_cursor_is_not_migrated(self):
+        path = self.root / "legacy.pt"
+        self.run_training(path, max_steps=2)
+        checkpoint = torch.load(path, weights_only=True)
+        checkpoint["training_state"].pop("data_states")
+        checkpoint["training_state"].pop("active_data_key")
+        torch.save(checkpoint, path)
+        self.run_training(path, resume=True, max_steps=3)
+        checkpoint = torch.load(path, weights_only=True)
+        state = checkpoint["training_state"]
+        self.assertEqual(checkpoint["step"], 3)
+        self.assertEqual(state["batches_in_epoch"], 1)
+        self.assertEqual(len(state["data_states"]), 1)
+
+    def test_resumed_corpus_rolls_into_next_epoch(self):
+        path = self.root / "epoch.pt"
+        self.run_training(path, max_steps=5)
+        self.run_training(path, resume=True, max_steps=6)
+        state = torch.load(path, weights_only=True)["training_state"]
+        self.assertEqual(state["epoch"], 1)
+        self.assertEqual(state["batches_in_epoch"], 1)
+
+    def test_changed_corpus_metadata_requires_explicit_reset(self):
+        path = self.root / "changed.pt"
+        self.run_training(path, max_steps=1)
+        with self.data_path.open("a", encoding="utf-8") as stream:
+            stream.write("alpha beta\n")
+        with self.assertRaisesRegex(ValueError, "reset-data-state"):
+            self.run_training(path, resume=True, max_steps=2)
+
     def test_failed_serialization_preserves_previous_checkpoint(self):
         path = self.root / "saved.pt"
         model = self.save_initial_checkpoint(path)

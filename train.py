@@ -247,6 +247,27 @@ def build_data_config(dataset, batch_size, num_workers, grad_accum_steps, seed):
     }
 
 
+def select_data_state(saved_state, data_key, data_config, reset=False):
+    """Keep traversal cursors separate from the latest global training RNG."""
+    states = dict(saved_state.get("data_states", {}))
+    state = states.get(data_key, {})
+    if reset:
+        states.pop(data_key, None)
+        state = {}
+    elif state and state["data_config"] != data_config:
+        raise ValueError(
+            "training data or batching configuration changed; use --reset-data-state "
+            "to explicitly restart this corpus while retaining other corpus cursors"
+        )
+    action = "reset" if reset else ("resume" if state else "first use")
+    print(
+        f"data traversal: {action}; corpus={data_key}; "
+        f"epoch={state.get('epoch', 0)} batches_in_epoch={state.get('batches_in_epoch', 0)}",
+        flush=True,
+    )
+    return states, state
+
+
 def train(
     cfg,
     data_path,
@@ -365,16 +386,13 @@ def train(
         if checkpoint_mode is not None and checkpoint_mode != mode and not explicit_save_checkpoint:
             save_checkpoint_path = cfg.get_checkpoint_path(mode=mode)
 
-    if reset_data_state:
-        resumed_training_state.clear()
-    if resumed_training_state and resumed_training_state["data_config"] != data_config:
-        raise ValueError(
-            "training data or batching configuration changed; use --reset-data-state "
-            "to explicitly restart data traversal while retaining the checkpoint weights and optimizer"
-        )
-    epoch = int(resumed_training_state.get("epoch", 0))
-    batches_in_epoch = int(resumed_training_state.get("batches_in_epoch", 0))
-    epoch_generator_state = resumed_training_state.get("epoch_generator_state")
+    data_key = mode + ":" + os.path.normcase(str(Path(data_path).resolve()))
+    data_states, selected_data_state = select_data_state(
+        resumed_training_state, data_key, data_config, reset=reset_data_state,
+    )
+    epoch = int(selected_data_state.get("epoch", 0))
+    batches_in_epoch = int(selected_data_state.get("batches_in_epoch", 0))
+    epoch_generator_state = selected_data_state.get("epoch_generator_state")
     resume_rng_state = resumed_training_state.get("rng_state")
     if resume_rng_state is not None:
         restore_rng_state(resume_rng_state)
@@ -424,6 +442,12 @@ def train(
             "eval_generator_state": eval_generator.get_state(),
             "rng_state": capture_rng_state(),
         }
+        data_states[data_key] = {
+            name: training_state[name]
+            for name in ("data_config", "epoch", "batches_in_epoch", "epoch_generator_state")
+        }
+        training_state["data_states"] = data_states
+        training_state["active_data_key"] = data_key
         save_checkpoint(
             cfg, save_checkpoint_path, model, optimizer, scaler, step, mode,
             scheduler, training_state=training_state,
